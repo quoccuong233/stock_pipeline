@@ -1,0 +1,15 @@
+kafka-python
+boto3
+snowflake-connector-python
+dbt-core
+dbt-snowflake
+requests
+pandas
+numpy
+yfinance
+scikit-learn
+xgboost
+joblib
+streamlit
+plotly
+python-dotenv

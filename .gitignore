@@ -1,0 +1,14 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Airflow logs
+logs/
+
+# dbt generated files
+dbt_stocks/target/
+dbt_stocks/logs/
+dbt_stocks/dbt_packages/
