@@ -19,6 +19,18 @@ SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
 SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
 SNOWFLAKE_DB = os.getenv("SNOWFLAKE_DATABASE", "STOCK_MDS")
 SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA", "COMMON")
+# Key-pair auth (preferred); falls back to SNOWFLAKE_PASSWORD when no key is configured
+SNOWFLAKE_PRIVATE_KEY_PATH = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH")
+
+def snowflake_auth():
+    if not SNOWFLAKE_PRIVATE_KEY_PATH:
+        return {"password": SNOWFLAKE_PASSWORD}
+    from cryptography.hazmat.primitives import serialization
+    with open(SNOWFLAKE_PRIVATE_KEY_PATH, "rb") as f:
+        key = serialization.load_pem_private_key(f.read(), password=None)
+    der = key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption())
+    return {"private_key": der}
 
 PROCESSED_PREFIX = "da_xu_ly/"  # files already loaded into Snowflake are moved here
 
@@ -59,8 +71,8 @@ def load_to_snowflake(**kwargs):
 
     conn = snowflake.connector.connect(
         user=SNOWFLAKE_USER,
-        password=SNOWFLAKE_PASSWORD,
         account=SNOWFLAKE_ACCOUNT,
+        **snowflake_auth(),
         warehouse=SNOWFLAKE_WAREHOUSE,
         database=SNOWFLAKE_DB,
         schema=SNOWFLAKE_SCHEMA
@@ -104,8 +116,9 @@ default_args = {
 with DAG(
     "minio_to_snowflake",
     default_args=default_args,
-    schedule_interval="*/1 * * * *",  # every 1 minutes
+    schedule_interval=timedelta(seconds=30),  # cron has no seconds field
     catchup=False,
+    max_active_runs=1,  # overlapping runs would load the same files twice
 ) as dag:
 
     task1 = PythonOperator(

@@ -10,14 +10,26 @@ from dotenv import load_dotenv
 st.set_page_config(page_title="Bảng điều khiển cổ phiếu", page_icon="📈", layout="wide")
 
 #Snowflake Connection (credentials are read from .env at the project root)
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
+
+def snowflake_auth():
+    # Key-pair auth (preferred); falls back to SNOWFLAKE_PASSWORD when no key is configured
+    key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH")
+    if not key_path:
+        return {"password": os.environ["SNOWFLAKE_PASSWORD"]}
+    from cryptography.hazmat.primitives import serialization
+    key = serialization.load_pem_private_key((ROOT / key_path).read_bytes(), password=None)
+    der = key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption())
+    return {"private_key": der}
 
 @st.cache_resource
 def get_connection():
     return snowflake.connector.connect(
         user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
         account=os.environ["SNOWFLAKE_ACCOUNT"],
+        **snowflake_auth(),
         warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         database=os.getenv("SNOWFLAKE_DATABASE", "STOCK_MDS"),
         schema=os.getenv("SNOWFLAKE_SCHEMA", "COMMON"),

@@ -12,3 +12,8 @@ logs/
 dbt_stocks/target/
 dbt_stocks/logs/
 dbt_stocks/dbt_packages/
+
+backup/
+
+# Snowflake key-pair
+keys/

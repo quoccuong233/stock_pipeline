@@ -15,6 +15,18 @@ services:
     depends_on:
       zookeeper:
         condition: service_started
+    restart: on-failure
+    # After an unclean stop, /brokers/ids/1 stays in ZooKeeper until its session expires (~18s).
+    # Starting before that makes the broker exit with NodeExistsException, so wait it out.
+    command:
+      - bash
+      - -c
+      - |
+        until zookeeper-shell zookeeper:2181 stat /brokers/ids/1 2>&1 | grep -q "Node does not exist"; do
+          echo "Waiting for previous broker registration to expire..."
+          sleep 2
+        done
+        exec /etc/confluent/docker/run
     ports:
       - "9092:9092" # internal Docker network
       - "29092:29092" # external host machine
@@ -33,6 +45,7 @@ services:
       interval: 5s
       timeout: 10s
       retries: 5
+      start_period: 60s
 
   kafdrop:
     image: obsidiandynamics/kafdrop:latest
@@ -68,10 +81,13 @@ services:
     environment:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      # host path in .env -> path of the mounted key inside the container
+      - SNOWFLAKE_PRIVATE_KEY_PATH=${SNOWFLAKE_PRIVATE_KEY_PATH:+/opt/airflow/keys/snowflake_rsa_key.p8}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+      - ./keys:/opt/airflow/keys:ro
     ports:
       - "8080:8080"
     command: webserver
@@ -86,10 +102,13 @@ services:
     environment:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      # host path in .env -> path of the mounted key inside the container
+      - SNOWFLAKE_PRIVATE_KEY_PATH=${SNOWFLAKE_PRIVATE_KEY_PATH:+/opt/airflow/keys/snowflake_rsa_key.p8}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+      - ./keys:/opt/airflow/keys:ro
     command: scheduler
 
   postgres:

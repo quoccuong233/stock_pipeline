@@ -12,7 +12,7 @@ flowchart LR
     B -->|topic stock-quotes| C[(Kafka)]
     C --> D[Consumer<br/>Python]
     D -->|1 file JSON / báo giá| E[(MinIO<br/>bronze-transactions)]
-    E -->|DAG mỗi phút| F[Airflow<br/>minio_to_snowflake]
+    E -->|DAG mỗi 30 giây| F[Airflow<br/>minio_to_snowflake]
     F -->|COPY INTO| G[(Snowflake<br/>BAO_GIA_CO_PHIEU_THO)]
     G --> H[dbt<br/>bronze → silver → gold]
     H --> I[Streamlit<br/>Dashboard]
@@ -23,7 +23,7 @@ flowchart LR
 | Nguồn dữ liệu | [Finnhub](https://finnhub.io) `/quote` | Giá hiện tại, cao/thấp/mở cửa trong ngày, giá đóng cửa phiên trước |
 | Streaming | Kafka + Zookeeper, Kafdrop | Hàng đợi báo giá giữa producer và consumer |
 | Data lake | MinIO (S3-compatible) | Lưu mỗi báo giá thành một file JSON |
-| Điều phối | Apache Airflow 2.9 | Mỗi phút tải file mới từ MinIO → Snowflake, rồi chuyển file sang `da_xu_ly/` |
+| Điều phối | Apache Airflow 2.9 | Mỗi 30 giây tải file mới từ MinIO → Snowflake, rồi chuyển file sang `da_xu_ly/` |
 | Kho dữ liệu | Snowflake | Bảng thô `BAO_GIA_CO_PHIEU_THO` (một cột `VARIANT`) |
 | Biến đổi | dbt (dbt-snowflake) | Các view bronze / silver / gold |
 | Hiển thị | Streamlit + Plotly | Dashboard tự làm mới |
@@ -79,13 +79,47 @@ cp .env.example .env
 
 Điền API key Finnhub, mật khẩu MinIO và thông tin Snowflake vào `.env`. File này đã nằm trong `.gitignore`. Producer, consumer, DAG Airflow và dashboard đều đọc bí mật từ đây.
 
-### 2. Tạo bảng thô trên Snowflake
+### 2. Tạo bảng thô và service user trên Snowflake
+
+Pipeline đăng nhập bằng một service user riêng với key-pair (không cần mật khẩu, dùng được cả khi tài khoản Snowflake đăng ký bằng Google). Tạo cặp khoá:
+
+```bash
+mkdir keys
+openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out keys/snowflake_rsa_key.p8
+openssl rsa -in keys/snowflake_rsa_key.p8 -pubout -out keys/snowflake_rsa_key.pub
+```
+
+Chạy trong worksheet Snowsight, thay `<PUBLIC_KEY>` bằng nội dung `keys/snowflake_rsa_key.pub` (bỏ dòng `-----BEGIN/END-----`):
 
 ```sql
+USE ROLE ACCOUNTADMIN;
+
+CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH
+  WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
+
+CREATE ROLE IF NOT EXISTS STOCK_PIPELINE;
+GRANT ROLE STOCK_PIPELINE TO ROLE SYSADMIN;
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE STOCK_PIPELINE;
+
 CREATE DATABASE IF NOT EXISTS STOCK_MDS;
 CREATE SCHEMA IF NOT EXISTS STOCK_MDS.COMMON;
 CREATE TABLE IF NOT EXISTS STOCK_MDS.COMMON.BAO_GIA_CO_PHIEU_THO (du_lieu VARIANT);
+GRANT OWNERSHIP ON DATABASE STOCK_MDS TO ROLE STOCK_PIPELINE;
+GRANT OWNERSHIP ON SCHEMA STOCK_MDS.COMMON TO ROLE STOCK_PIPELINE;
+GRANT OWNERSHIP ON TABLE STOCK_MDS.COMMON.BAO_GIA_CO_PHIEU_THO TO ROLE STOCK_PIPELINE;
+
+CREATE USER IF NOT EXISTS STOCK_PIPELINE_SVC
+  TYPE = SERVICE
+  DEFAULT_ROLE = STOCK_PIPELINE
+  DEFAULT_WAREHOUSE = COMPUTE_WH
+  RSA_PUBLIC_KEY = '<PUBLIC_KEY>';
+GRANT ROLE STOCK_PIPELINE TO USER STOCK_PIPELINE_SVC;
+
+-- Giá trị cho SNOWFLAKE_ACCOUNT trong .env
+SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME();
 ```
+
+Trong `.env`: `SNOWFLAKE_USER=STOCK_PIPELINE_SVC`, `SNOWFLAKE_ACCOUNT=<kết quả câu SELECT cuối>`, `SNOWFLAKE_PRIVATE_KEY_PATH=<đường dẫn tuyệt đối tới keys/snowflake_rsa_key.p8>`. Airflow tự đọc key qua thư mục `keys/` được mount vào container.
 
 ### 3. Khởi động hạ tầng
 
@@ -130,8 +164,8 @@ dbt_stocks:
       type: snowflake
       account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
       user: "{{ env_var('SNOWFLAKE_USER') }}"
-      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
-      role: ACCOUNTADMIN
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      role: STOCK_PIPELINE
       warehouse: COMPUTE_WH
       database: STOCK_MDS
       schema: COMMON
